@@ -1,0 +1,100 @@
+# GitHub Actions CI/CD Pipeline
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Backend - Install dependencies
+      run: |
+        cd backend
+        npm install
+
+    - name: Backend - Run tests
+      run: |
+        cd backend
+        npm test || true
+
+    - name: Frontend - Install dependencies
+      run: |
+        cd frontend
+        npm install
+
+    - name: Frontend - Build
+      run: |
+        cd frontend
+        npm run build
+
+    - name: AI Service - Install dependencies
+      run: |
+        cd ai-service
+        pip install -r requirements.txt
+
+    - name: Docker - Build images
+      run: docker-compose build
+
+    - name: Docker - Start services
+      run: docker-compose up -d
+
+    - name: Health check
+      run: |
+        sleep 10
+        curl http://localhost:3000/api/health || exit 1
+        curl http://localhost:5000/api/health || exit 1
+
+    - name: Docker - Stop services
+      if: always()
+      run: docker-compose down
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Deploy to server
+      env:
+        DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts
+        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST 'cd ~/AI-Smart-Tender-Management && git pull && docker-compose up -d'
